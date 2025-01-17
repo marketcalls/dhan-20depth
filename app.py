@@ -4,11 +4,14 @@ import asyncio
 import json
 import struct
 import os
+import time
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Flask app setup
 app = Flask(__name__)
+app.debug = os.getenv('DEBUG_MODE', 'False').lower() in ('true', '1', 't')
 
 class DhanDepthWebSocket:
     def __init__(self):
@@ -17,8 +20,13 @@ class DhanDepthWebSocket:
         self.ws_url = f"wss://depth-api-feed.dhan.co/twentydepth?token={self.token}&clientId={self.client_id}&authType=2"
         self.depth_data = {"bids": [], "offers": []}
 
+    def log(self, message):
+        """Ensure immediate logging output"""
+        print(message, flush=True)
+
     async def connect(self):
         async with websockets.connect(self.ws_url) as websocket:
+            self.log("WebSocket connected successfully")
             # Subscribe to instruments
             subscribe_message = {
                 "RequestCode": 23,
@@ -37,11 +45,18 @@ class DhanDepthWebSocket:
                     message = await websocket.recv()
                     await self.process_binary_message(message)
                 except websockets.exceptions.ConnectionClosed:
-                    print("Connection closed. Reconnecting...")
+                    self.log("Connection closed. Reconnecting...")
+                    break
+                except Exception as e:
+                    self.log(f"Error: {e}")
                     break
 
     async def process_binary_message(self, message):
         # Parse header (first 12 bytes)
+        if len(message) < 12:
+            self.log("Error: Message too short - Please subscribe to Data APIs")
+            return
+
         header = message[:12]
         msg_length, feed_code, exchange_segment, security_id, _ = struct.unpack('!h2bi4s', header)
 
@@ -61,7 +76,7 @@ class DhanDepthWebSocket:
 
             if feed_code == 41:
                 self.depth_data["bids"] = depth_data
-            else:
+            elif feed_code == 51:
                 self.depth_data["offers"] = depth_data
 
 depth_socket = DhanDepthWebSocket()
@@ -83,11 +98,16 @@ def get_market_depth():
     return jsonify(depth_socket.depth_data)
 
 def start_websocket():
-    asyncio.run(depth_socket.connect())
+    while True:
+        try:
+            asyncio.run(depth_socket.connect())
+        except Exception as e:
+            print(f"Connection error: {e}", flush=True)
+        time.sleep(5)
 
 if __name__ == '__main__':
     import threading
     ws_thread = threading.Thread(target=start_websocket)
     ws_thread.daemon = True
     ws_thread.start()
-    app.run(debug=True, use_reloader=False)
+    app.run(debug=app.debug, use_reloader=False)
